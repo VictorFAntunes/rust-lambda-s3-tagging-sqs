@@ -1,0 +1,76 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+Resources:
+
+  LandingBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub
+        - 'landing-pad-bucket-rust-lambda-validation-${RandomSuffix}'
+        - { RandomSuffix: !Select [0, !Split ["-", !Select [2, !Split ["/", !Ref AWS::StackId ]]]] }
+      VersioningConfiguration:
+        Status: 'Enabled'
+
+  SuccessQueue:
+    Type: 'AWS::SQS::Queue'
+    Properties:
+      QueueName: 'SuccessQueue.fifo'
+      FifoQueue: true
+      ContentBasedDeduplication: true
+
+  FailureQueue:
+    Type: 'AWS::SQS::Queue'
+    Properties:
+      QueueName: 'FailureQueue.fifo'
+      FifoQueue: true
+      ContentBasedDeduplication: true
+
+  VerificationLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      MemorySize: 128
+      Handler: bootstrap
+      Runtime: provided.al2
+      Timeout: 5
+      CodeUri: . #target/lambda/rust-lambda-s3-tagging-sqs/
+      Policies:
+        - S3FullAccessPolicy: #Required for tagging
+            BucketName: !Sub
+              - 'landing-pad-bucket-rust-lambda-validation-${RandomSuffix}'
+              - { RandomSuffix: !Select [0, !Split ["-", !Select [2, !Split ["/", !Ref AWS::StackId ]]]] }
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt SuccessQueue.QueueName
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt FailureQueue.QueueName
+      Events:
+        VerificationEvent:
+          Type: S3
+          Properties:
+            Bucket: !Ref LandingBucket
+            Events:
+              - s3:ObjectCreated:*
+      Environment:
+        Variables:
+          SUCCESS_QUEUE_URL: !GetAtt SuccessQueue.QueueUrl
+          FAILURE_QUEUE_URL: !GetAtt FailureQueue.QueueUrl
+    Metadata:
+      BuildMethod: makefile
+
+  LambdaInvokePermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName: !GetAtt VerificationLambda.Arn
+      Action: 'lambda:InvokeFunction'
+      Principal: 's3.amazonaws.com'
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: !GetAtt LandingBucket.Arn
+
+Outputs:
+  FunctionName:
+    Value: !Ref VerificationLambda
+    Description: Name of the Lambda function
+  BucketName:
+    Value: !Ref LandingBucket
+    Description: Name of the S3 bucket
+
